@@ -368,12 +368,16 @@ def action_name(action):
     return "ERRNO(%d)" % action[1]
 
 
-def build_ir(policy):
-    b = Builder()
+def emit_gates(b, policy, kill_lbl):
+    """Architecture gate (+ x32 ABI rejection on x86_64).
+
+    Falls through when the arch matches; jumps to kill_lbl otherwise.
+    Shared by the single-policy compiler and the pair composition (both
+    sides of a pair carry identical gates, so one copy is emitted).
+    """
     arch = policy["arch"]
 
     # 1) architecture gate: mismatch => KILL_PROCESS
-    kill_lbl = b.fresh("kill")
     b.plain(Insn(LD_ABS_W, k=OFF_ARCH, note=("arch",)))
     b.emit(JMP_JEQ_K, k=arch["audit"], jf=kill_lbl, note=("arch",))
 
@@ -382,23 +386,23 @@ def build_ir(policy):
         b.plain(Insn(LD_ABS_W, k=OFF_NR, note=("x32",)))
         b.emit(JMP_JGT_K, k=arch["x32_bit"] - 1, jt=kill_lbl, note=("x32",))
 
-    # 3) ordered dispatch interleaved with rule bodies.  A non-matching or
-    #    condition-failing rule falls straight through to the next test, so
-    #    all control flow is strictly forward (cBPF has no backwards jumps
-    #    from a clean seccomp program layout).
-    action_labels = {}
 
-    def lbl_for(action):
-        if action not in action_labels:
-            action_labels[action] = b.fresh("act")
-        return action_labels[action]
+def emit_dispatch(b, policy, lbl_for, default_lbl, nr_loaded):
+    """Ordered first-match dispatch interleaved with rule bodies.
 
-    default_lbl = b.fresh("default")
+    lbl_for(action) maps a rule action to its terminal label.  A
+    non-matching or condition-failing rule falls straight through to the
+    next test, so all control flow is strictly forward (cBPF has no
+    backwards jumps from a clean seccomp program layout).  The last rule's
+    fail target is default_lbl, which the caller marks.  nr_loaded tells
+    whether A already holds seccomp_data.nr for the first rule test (true
+    right after the x32 gate, false anywhere else).
+    """
     n_rules = len(policy["rules"])
 
     for i, rule in enumerate(policy["rules"]):
         fail = b.fresh("rule%d_fail" % i) if i < n_rules - 1 else default_lbl
-        if arch["x32_bit"] is None or i > 0:
+        if not nr_loaded or i > 0:
             b.plain(Insn(LD_ABS_W, k=OFF_NR, note=("dispatch", i)))
         body = b.fresh("rule%d_body" % i)
         b.emit(JMP_JEQ_K, k=rule["nr"], jt=body, jf=fail, note=("dispatch", i))
@@ -412,6 +416,27 @@ def build_ir(policy):
             b.mark(fail)
 
     # last rule's fail label IS default_lbl; nothing more needed
+
+
+def build_ir(policy):
+    b = Builder()
+    kill_lbl = b.fresh("kill")
+
+    # 1)+2) architecture gate and x32 ABI rejection
+    emit_gates(b, policy, kill_lbl)
+
+    # 3) ordered dispatch; every rule action lands on a shared terminal
+    action_labels = {}
+
+    def lbl_for(action):
+        if action not in action_labels:
+            action_labels[action] = b.fresh("act")
+        return action_labels[action]
+
+    default_lbl = b.fresh("default")
+    emit_dispatch(
+        b, policy, lbl_for, default_lbl, nr_loaded=bool(policy["arch"]["x32_bit"])
+    )
 
     # 4) terminal block: default, one RET per distinct action, KILL
     b.mark(default_lbl)
@@ -494,7 +519,9 @@ def relax(b):
         inserts = []
         for s, lbl in far:
             t = b.fresh("tramp")
-            ja = Insn(JMP_JA, k=0, note=("tramp",))
+            # carry the originating branch's note so provenance (and the
+            # pair-composition side tagging) survives relaxation
+            ja = Insn(JMP_JA, k=0, note=("tramp",) + tuple(ins.note or ()))
             ja._target = lbl
             inserts.append((t, ja))
             if s == "jt":

@@ -45,6 +45,9 @@ NR_MAP = {
     45: 113,
     293: 59,
     157: 167,
+    # compose_right.json: kill-rule number kept identical on aarch64 (no
+    # collision with any mapped number; the probe never really invokes it):
+    401: 401,
 }
 
 

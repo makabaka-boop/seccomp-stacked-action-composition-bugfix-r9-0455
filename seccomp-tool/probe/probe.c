@@ -2,6 +2,8 @@
  * probe.c -- minimal fixed, side-effect-free seccomp verification probe.
  *
  *   probe <prog.filter> <arch:x86_64|aarch64> [foreign.filter]
+ *   probe <prog.filter> <arch> smoke <nr> a1..a6
+ *   probe <left.filter> <arch> stack <right.filter> <nr> a1..a6
  *
  * Design
  * ------
@@ -203,6 +205,41 @@ static struct obs run_child_install6(const unsigned char *filter, size_t flen,
     return (struct obs){O_OTHER, st};
 }
 
+/* install f1 THEN f2 in one child (real kernel filter stacking), then run
+ * exactly one call -- the ground truth a merged filter is checked against */
+static struct obs run_child_install2(const unsigned char *f1, size_t l1,
+                                     const unsigned char *f2, size_t l2,
+                                     long nr, const long a[6]) {
+    pid_t pid = fork();
+    if (pid < 0) return (struct obs){O_OTHER, -1};
+    if (pid == 0) {
+        if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) _exit(200);
+        struct sock_fprog p1 = {
+            .len = (unsigned short)(l1 / 8),
+            .filter = (struct sock_filter *)f1,
+        };
+        if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &p1) < 0)
+            _exit(201);
+        struct sock_fprog p2 = {
+            .len = (unsigned short)(l2 / 8),
+            .filter = (struct sock_filter *)f2,
+        };
+        if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &p2) < 0)
+            _exit(203);                 /* second install refused */
+        long r = raw6(nr, a[0], a[1], a[2], a[3], a[4], a[5]);
+        int e = r < 0 ? (int)-r : 0;
+        raw3(NRS.exit_group, e & 0xff, 0, 0);
+        _exit(202);
+    }
+    int st = 0;
+    waitpid(pid, &st, 0);
+    if (WIFSIGNALED(st))
+        return (struct obs){O_KILL, WTERMSIG(st)};
+    if (WIFEXITED(st))
+        return (struct obs){O_EXIT, WEXITSTATUS(st)};
+    return (struct obs){O_OTHER, st};
+}
+
 struct case_t {
     const char *tag;
     long nr, a1, a2, a3;
@@ -237,6 +274,27 @@ int main(int argc, char **argv) {
             printf("SMOKE KILL signal=%d\n", o.code);
         else
             printf("SMOKE ABNORMAL 0x%x\n", o.code);
+        return 0;
+    }
+
+    /* stack mode: install left filter THEN right filter in one child and
+     * issue exactly one call -- the kernel's real filter-stacking result.
+     * Usage: probe <left.f> <arch> stack <right.f> <nr> a1..a6 */
+    if (argc == 12 && !strcmp(argv[3], "stack")) {
+        size_t flen2;
+        unsigned char *filter2 = read_file(argv[4], &flen2);
+        if (!filter2) { perror("read filter2"); return 2; }
+        long nr = strtol(argv[5], NULL, 0);
+        long a[6];
+        for (int i = 0; i < 6; i++)
+            a[i] = strtol(argv[6 + i], NULL, 0);
+        struct obs o = run_child_install2(filter, flen, filter2, flen2, nr, a);
+        if (o.kind == O_EXIT)
+            printf("STACK EXIT errno=%d\n", o.code);
+        else if (o.kind == O_KILL)
+            printf("STACK KILL signal=%d\n", o.code);
+        else
+            printf("STACK ABNORMAL 0x%x\n", o.code);
         return 0;
     }
 

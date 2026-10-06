@@ -48,6 +48,16 @@ def pack_seccomp_data(nr, arch, args, ip=0):
 
 
 def run(program, data, max_steps=MAX_STEPS):
+    """Execute the program; return the RET k value."""
+    return run_ex(program, data, max_steps)[0]
+
+
+def run_ex(program, data, max_steps=MAX_STEPS):
+    """Execute the program; return (ret_k, pc_of_the_RET_instruction).
+
+    The pc lets verification code attribute a decision to the exact
+    terminal instruction (and its provenance record) that produced it.
+    """
     if len(data) != SECCOMP_DATA_LEN:
         raise BPFError("seccomp_data must be 64 bytes")
     a = 0
@@ -91,7 +101,7 @@ def run(program, data, max_steps=MAX_STEPS):
         elif cls == BPF_RET:
             if code != (BPF_RET | BPF_K):
                 raise BPFError("pc=%d only RET #k permitted" % pc)
-            return k
+            return k, pc
         elif cls == BPF_ALU:
             op = code & 0xF0
             src = code & 0x08

@@ -10,8 +10,24 @@ def main():
         with open(args.left) as source:first=source.read()
         with open(args.right) as source:second=source.read()
         result=compile_pair(first,second)
-        with open(args.output,"w") as output:json.dump(result,output)
     except (ValueError,TypeError,OSError) as error:
+        # 无效架构组合、损坏策略或超限产物：整次失败，原输出保持不变
         print(str(error),file=sys.stderr);return 1
+    # atomic write: a previous output file is replaced only on full success
+    directory=os.path.dirname(os.path.abspath(args.output))
+    fd,tmp=tempfile.mkstemp(dir=directory,prefix=".compose-",suffix=".tmp")
+    try:
+        with os.fdopen(fd,"w") as handle:
+            json.dump(result,handle,indent=1)
+            handle.write("\n")
+        os.replace(tmp,args.output)
+    except OSError as error:
+        try:os.unlink(tmp)
+        except OSError:pass
+        print(str(error),file=sys.stderr);return 1
+    stats=result["stats"]
+    print("merged %s + %s -> %s (%d insns, %d trampolines, %d right copies)"
+          %(args.left,args.right,args.output,stats["instructions"],
+            stats["long_jump_trampolines"],stats["right_body_copies"]))
     return 0
 if __name__=="__main__":raise SystemExit(main())

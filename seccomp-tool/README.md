@@ -9,16 +9,21 @@ tools/
   seccompcc        JSON policy -> .filter (raw sock_filter[]),
                                   .list (annotated disasm + provenance map),
                                   .stats (JSON summary)
+  seccompcompose   left.json + right.json -> one merged-filter bundle
   bpf.py           cBPF opcode / seccomp_data model
   compiler.py      policy parser + 64-bit codegen + long-jump relaxation
+  composition.py   two-policy merger (kernel filter-stacking semantics)
   evaluator.py     INDEPENDENT reference evaluator (policy oracle)
   interp.py        INDEPENDENT classic-BPF interpreter (runs the raw filter)
   difftest.py      evaluator  vs  interpreter over synthetic seccomp_data
+  composetest.py   stacked oracle  vs  interpreter over merged filter bytes
   check_kernel.py  evaluator  vs  the REAL kernel, via the C probe
+  check_compose.py merged filter  vs  REAL sequential install, via the probe
   mk_aarch64.py    host-verification twin (arch number remap)
 policies/
   probe.json       x86-64 probe policy
   longjump.json    policy engineered to exceed the u8 jump range
+  compose_right.json  second policy for merge tests (all verdict classes)
 probe/
   probe.c          fixed, side-effect-free kernel probe
 Makefile
@@ -67,6 +72,31 @@ Makefile
   re-resolves until every `jt/jf` fits. `policies/longjump.json` forces this
   (27 trampolines / 414 insns on x86-64).
 
+## Merging two policies
+
+`tools/seccompcompose left.json right.json output.json` emits a single
+bundle (base64 raw filter bytes, per-instruction table, provenance map)
+equivalent to loading `left` first and `right` second
+([kernel filter stacking](https://docs.kernel.org/userspace-api/seccomp_filter.html)):
+
+* both sides must allow for the call to run; `KILL_PROCESS` > `ERRNO` >
+  `ALLOW`; when both return `ERRNO` the **right** filter's data wins;
+* each side keeps its own first-match rule order and default action;
+* the identical arch/x32 gates are emitted once; only same-arch pairs are
+  accepted; 64-bit comparisons, nested conditions, long jumps and the 4096
+  instruction limit all carry over (over-limit products are rejected as a
+  whole and a previous output file is left untouched);
+* every terminal `RET` in the bundle names the side whose verdict decided
+  the return (`decides: left|right|both`), and every instruction maps back
+  to a rule, the default, or the arch gate of its origin policy.
+
+The merge is verified three ways: the bundle's raw bytes are interpreted
+and compared against the independent stacked oracle
+(`evaluator.evaluate_stacked`) including the deciding-side provenance
+(`composetest.py`), and the merged filter is installed in real child
+processes side by side with genuinely sequential left-then-right installs
+(`check_compose.py`, probe `stack` mode).
+
 ## Build & test
 
 ```sh
@@ -100,6 +130,11 @@ stage (the emitted cBPF is identical logic either way).
 3. **Long-jump acceptance**: the 400+ insn trampoline filter is actually
    installed (kernel BPF verifier) via the probe's `smoke` mode and checked
    at `2^32+` interval boundaries.
+4. **Composition** (`composetest.py` + `check_compose.py`): merged pairs are
+   differentially checked against the stacked oracle (fixed pairs, both
+   long-jump directions, random fuzz, rejection paths, CLI atomicity), then
+   the merged filter is installed in real children and required to match
+   both the oracle and a genuine sequential left-then-right installation.
 
 ## Outputs
 

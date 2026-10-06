@@ -103,3 +103,52 @@ def evaluate(policy, data):
         if cond is None or _eval_cond(cond, data["args"]):
             return action
     return policy["default"]
+
+
+# ---------------------------------------------------------------------------
+# Stacked filters: left loaded first, right loaded on top (kernel semantics)
+# ---------------------------------------------------------------------------
+def combine_verdicts(first, second):
+    """Kernel stacking precedence for two verdicts on the SAME syscall.
+
+    `first` is the earlier-installed (left) filter's verdict, `second` the
+    later (right) one.  KILL beats ERRNO beats ALLOW; when both are ERRNO
+    the later filter's data wins (the kernel walks newest-first and keeps
+    the first verdict of the highest precedence).
+    """
+    if first[0] == "kill" or second[0] == "kill":
+        return ("kill",)
+    if first[0] == "errno" and second[0] == "errno":
+        return second
+    if first[0] == "errno":
+        return first
+    if second[0] == "errno":
+        return second
+    return ("allow",)
+
+
+def evaluate_stacked(first, second, data):
+    """Decision of `first` then `second` loaded on top (kernel semantics)."""
+    return combine_verdicts(evaluate(first, data), evaluate(second, data))
+
+
+def stacked_decider(first, second, data):
+    """Which side's verdict determines evaluate_stacked's return value.
+
+    "both" for the shared architecture/x32 gate and for allow+allow.
+    """
+    if data["arch"] != ARCH_AUDIT[first["arch"]]:
+        return "both"
+    if first["arch"] == "x86_64" and (data["nr"] & 0xFFFFFFFF) & X32_BIT:
+        return "both"
+    a = evaluate(first, data)
+    b = evaluate(second, data)
+    if a[0] == "kill":
+        return "left"
+    if b[0] == "kill":
+        return "right"
+    if b[0] == "errno":
+        return "right"
+    if a[0] == "errno":
+        return "left"
+    return "both"

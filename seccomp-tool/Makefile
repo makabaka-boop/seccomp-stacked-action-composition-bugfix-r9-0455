@@ -9,7 +9,8 @@
 # Targets:
 #   make            build native probe + all policy artifacts + run tests
 #   make x86_64     build probe for x86-64 and compile the x86-64 filters
-#   make test       differential (evaluator vs cBPF interpreter) + kernel
+#   make test       differential (evaluator vs cBPF interpreter, single and
+#                   merged pairs) + real-kernel stages (single and merged)
 #   make clean
 
 PY      ?= python3
@@ -23,7 +24,7 @@ POL     := policies
 FILTERS := $(OUT)/probe_x86_64.filter $(OUT)/probe_aarch64.filter \
            $(OUT)/longjump_x86_64.filter $(OUT)/longjump_aarch64.filter
 
-.PHONY: all filters x86_64 test difftest kernel clean
+.PHONY: all filters x86_64 test difftest composetest kernel composekernel clean
 
 all: filters $(OUT)/probe test
 
@@ -51,6 +52,9 @@ $(POL)/longjump_aarch64.json: $(POL)/longjump.json $(TOOLS)/mk_aarch64.py
 $(OUT)/longjump_aarch64.filter: $(POL)/longjump_aarch64.json | $(OUT)
 	$(PY) $(TOOLS)/seccompcc $< -o $(OUT)/longjump_aarch64
 
+$(POL)/compose_right_aarch64.json: $(POL)/compose_right.json $(TOOLS)/mk_aarch64.py
+	$(PY) $(TOOLS)/mk_aarch64.py $< $@
+
 # --- probe binaries ---------------------------------------------------------
 $(OUT)/probe: probe/probe.c | $(OUT)
 	$(CC) -O2 -Wall -Wextra -o $@ probe/probe.c
@@ -64,6 +68,10 @@ $(OUT)/probe-x86_64: probe/probe.c | $(OUT)
 # --- tests ------------------------------------------------------------------
 difftest:
 	$(PY) $(TOOLS)/difftest.py
+
+# merged-pair differential stage: merged filter bytes vs the stacked oracle
+composetest:
+	$(PY) $(TOOLS)/composetest.py
 
 # kernel stage uses the native binary + native-arch filter, and loads the
 # opposite-arch filter only to prove the arch gate fires in the real kernel.
@@ -80,7 +88,19 @@ kernel: $(OUT)/probe $(OUT)/probe_aarch64.filter $(OUT)/probe_x86_64.filter \
 	    --longjump $(OUT)/longjump_aarch64.filter; \
 	fi
 
-test: filters $(OUT)/probe difftest kernel
+# merged filter vs real sequential installation in the kernel
+composekernel: $(OUT)/probe $(POL)/probe_aarch64.json $(POL)/compose_right_aarch64.json
+	@uname_m=$$(uname -m); \
+	if [ "$$uname_m" = "x86_64" ]; then \
+	  $(PY) $(TOOLS)/check_compose.py $(OUT)/probe x86_64 \
+	    $(POL)/probe.json $(POL)/compose_right.json; \
+	else \
+	  $(PY) $(TOOLS)/check_compose.py $(OUT)/probe aarch64 \
+	    $(POL)/probe_aarch64.json $(POL)/compose_right_aarch64.json; \
+	fi
+
+test: filters $(OUT)/probe difftest composetest kernel composekernel
 
 clean:
-	rm -rf $(OUT) $(POL)/probe_aarch64.json $(POL)/longjump_aarch64.json
+	rm -rf $(OUT) $(POL)/probe_aarch64.json $(POL)/longjump_aarch64.json \
+	       $(POL)/compose_right_aarch64.json

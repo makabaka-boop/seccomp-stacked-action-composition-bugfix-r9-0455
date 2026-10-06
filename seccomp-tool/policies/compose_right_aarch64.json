@@ -1,0 +1,41 @@
+{
+  "arch": "aarch64",
+  "default": "allow",
+  "rules": [
+    {
+      "syscall": 64,
+      "action": {
+        "errno": "44"
+      }
+    },
+    {
+      "syscall": 57,
+      "action": {
+        "errno": "33"
+      },
+      "when": {
+        "arg": {
+          "arg": 1,
+          "op": "ge",
+          "value": "4294967296"
+        }
+      }
+    },
+    {
+      "syscall": 401,
+      "action": "kill"
+    },
+    {
+      "syscall": 93,
+      "action": "allow"
+    },
+    {
+      "syscall": 94,
+      "action": "allow"
+    },
+    {
+      "syscall": 167,
+      "action": "allow"
+    }
+  ]
+}
