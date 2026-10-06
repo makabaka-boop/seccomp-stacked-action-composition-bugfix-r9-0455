@@ -1,0 +1,10 @@
+
+seccomp-tool/out/
+
+node_modules/
+dist/
+__pycache__/
+*.pyc
+*.db
+.pytest_cache/
+*.tsbuildinfo

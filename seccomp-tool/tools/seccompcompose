@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+import argparse,json,os,tempfile,sys
+from composition import compile_pair
+
+def main():
+    parser=argparse.ArgumentParser(description="按先左后右装载语义生成一份合并过滤器包")
+    parser.add_argument("left");parser.add_argument("right");parser.add_argument("output")
+    args=parser.parse_args()
+    try:
+        with open(args.left) as source:first=source.read()
+        with open(args.right) as source:second=source.read()
+        result=compile_pair(first,second)
+        with open(args.output,"w") as output:json.dump(result,output)
+    except (ValueError,TypeError,OSError) as error:
+        print(str(error),file=sys.stderr);return 1
+    return 0
+if __name__=="__main__":raise SystemExit(main())
